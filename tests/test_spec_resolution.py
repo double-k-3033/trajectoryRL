@@ -35,6 +35,10 @@ from trajectoryrl.utils.commitments import MinerCommitment
 SPEC21_ADDITIONS = {"audio-synth-stft-peaks", "puzzle-solver", "query-optimize"}
 SPEC22_ADDITIONS = {"crack-7z-hash", "parallel-particle-simulator", "regex-engine-from-scratch"}
 SPEC23_ADDITIONS = {"attention-mil", "llm-inference-batching-scheduler", "torch-tensor-parallelism"}
+# SPEC 24 is the first *replacement* bump: it removes AND adds (net size unchanged),
+# so it is asserted as a swap, not a subset like the additive specs above.
+SPEC24_ADDITIONS = {"fix-code-vulnerability", "large-scale-text-editing", "postgres-csv-clean"}
+SPEC24_REMOVALS = {"schemelike-metacircular-eval", "3d-model-format-legacy", "pcap-to-netflow"}
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,22 @@ class TestSpec23Set:
         assert spec23 - spec22 == SPEC23_ADDITIONS
         assert spec22 < spec23
         assert len(spec22) == 23 and len(spec23) == 26
+
+
+class TestSpec24Set:
+    def test_spec24_swaps_three_scenarios(self):
+        spec23 = set(sh.SCENARIOS_BY_SPEC[23])
+        spec24 = set(sh.SCENARIOS_BY_SPEC[24])
+        assert spec24 - spec23 == SPEC24_ADDITIONS
+        assert spec23 - spec24 == SPEC24_REMOVALS
+        # Replacement, not a superset: net size stays 26.
+        assert not (spec23 < spec24)
+        assert len(spec23) == len(spec24) == 26
+
+    def test_spec23_still_resolves_during_transition(self):
+        # resolve_eval_spec must still serve SPEC 23 while validators roll forward.
+        assert sh.SCENARIOS_BY_SPEC[23]
+        assert sh.resolve_eval_spec(23) == (23, sh.SCENARIOS_BY_SPEC[23])
 
 
 # ---------------------------------------------------------------------------

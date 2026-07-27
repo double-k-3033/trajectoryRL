@@ -166,6 +166,39 @@ SCENARIOS_BY_SPEC: Dict[int, tuple[str, ...]] = {
         "tree-directory-parser",
         "write-compressor",
     ),
+    # SPEC 24 — first replacement bump: swaps scenarios rather than growing N.
+    # Retires schemelike-metacircular-eval, 3d-model-format-legacy, pcap-to-netflow
+    # (dead signal); adds fix-code-vulnerability, large-scale-text-editing,
+    # postgres-csv-clean. Net size stays 26. Keep the 23 entry for the transition
+    # window (resolve_eval_spec serves it while validators roll forward).
+    24: (
+        "attention-mil",
+        "audio-synth-stft-peaks",
+        "configure-git-webserver",
+        "crack-7z-hash",
+        "custom-memory-heap-crash",
+        "db-wal-recovery",
+        "deterministic-tarball",
+        "fix-code-vulnerability",
+        "git-leak-recovery",
+        "git-multibranch",
+        "large-scale-text-editing",
+        "largest-eigenval",
+        "llm-inference-batching-scheduler",
+        "nginx-request-logging",
+        "parallel-particle-simulator",
+        "path-tracing",
+        "postgres-csv-clean",
+        "puzzle-solver",
+        "query-optimize",
+        "race-condition-fix",
+        "regex-chess",
+        "regex-engine-from-scratch",
+        "swe-bench-astropy-2",
+        "torch-tensor-parallelism",
+        "tree-directory-parser",
+        "write-compressor",
+    ),
 }
 
 # Default scenario set: the local binary's spec. A SPEC_NUMBER bump
