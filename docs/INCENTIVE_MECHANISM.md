@@ -2,7 +2,7 @@
 
 **Subnet**: SN11 (TrajectoryRL)
 
-**Version**: v6.2
+**Version**: v6.3
 
 **Date**: 2026-05-07
 
@@ -18,7 +18,7 @@ The core loop:
 2. **Pre-Eval Gate**: The platform server runs the integrity LLM-as-judge check once per `pack_hash` and admits passing submissions to the **challenger queue**.
 3. **Challenge Epoch**: Each epoch the queue head is dispatched to validators as the active challenger. Validators evaluate it independently and post stake-signed scores back to the platform.
 4. **Score Aggregation**: The platform finalizes the epoch by computing the consensus score (from spec 16, the **Winsorized** mean over qualified validator votes — the single highest and lowest are clipped before averaging; plain average before) and consensus qualified flag (majority of reporting validators by head count), gated by a stake quorum.
-5. **Winner Protection**: A challenger replaces the seated winner only if it qualifies and clears the takeover bar — from spec 16, a **score-dependent multiplicative margin δ(s)**: 3% across the normal range, decaying linearly to zero as the defended score approaches the score ceiling; before, a flat multiplicative `δ = 3%`. The bar also **time-decays with the seat's age** (grace → linear premium decay → premium gone at ~3 days, bar = the winner's real score) so a camped seat becomes progressively easier to take; see Winner Protection below.
+5. **Winner Protection**: A challenger replaces the seated winner only if it qualifies and clears the takeover bar — from spec 16, a **score-dependent multiplicative margin δ(s)**: 3% across the normal range, decaying linearly to zero as the defended score approaches the score ceiling; before, a flat multiplicative `δ = 3%`. The bar also **time-decays with the seat's age** (grace → premium fades → bar continues *below* the real score to a fixed −3% handicap at ~3 days) so a camped seat becomes progressively easier to take, and a fully-aged seat can be taken by a challenger scoring up to 3% under the incumbent; see Winner Protection below.
 6. **Weight Setting**: Validators read the canonical winner from the platform and call `set_weights` every tempo. The seated winner takes 100% of miner alpha; when no seat exists (cold start, deregistered or banned winner) weight is set to the subnet owner UID and the chain burns the emission.
 
 For the current season's scoring method, pack schema, and evaluation specifics, see [SCORING_AND_EVALUATION.md](SCORING_AND_EVALUATION.md).
@@ -147,15 +147,16 @@ challenger_score > winner_score × (1 + δ(s)),   s = winner_score / max_score
   - higher-is-better seasons: `challenger > winner × (1 + δ)`  (δ = 0.03)
   - lower-is-better seasons: `challenger < winner × (1 - δ)`
 
-**Time-decay of the takeover *margin* (anti-camping).** The δ bar above defends a seat's *score*; an orthogonal rule stops a seat being *camped* indefinitely. Only the protection **premium** δ decays with the seat's **age** — epochs since the current hotkey took the seat (`winner_state.seated_epoch_id`, migration 093):
+**Time-decay of the takeover bar (anti-camping).** The δ bar above defends a seat's *score*; an orthogonal rule stops a seat being *camped* indefinitely. With the seat's **age** — epochs since the current hotkey took the seat (`winner_state.seated_epoch_id`, migration 093) — the bar first sheds its protection **premium** δ and then keeps sliding into a fixed terminal **handicap** `H = 3%` *below* the real score:
 
 ```
   age ≤ 5 epochs (~9h)        → grace: full premium, bar = winner_score × (1 + δ)
-  5 < age < 40                → decay: premium shrinks LINEARLY, δ·f(age), f: 1 → 0
-  age ≥ 40 epochs (~3 days)   → floor: premium retired, bar = winner_score (real score)
+  5 < age < 40                → decay: bar slides from the +δ premium down through the
+                                real score into the −H handicap; factor f: 1 → 0
+  age ≥ 40 epochs (~3 days)   → floor: bar = winner_score × (1 − H), H = 3%
 ```
 
-Past grace the bar is `winner_score × (1 + δ·f(age))` and eases to `winner_score` itself by ~3 days — the premium fades, but the bar **never drops below the winner's real score**, so margin decay never advantages a weaker challenger. **Hard forced rotation**: only a *different* hotkey taking the seat resets the clock — a same-hotkey resubmission may raise `winner_score` but never resets `seated_epoch_id`, so a champion cannot camp by re-submitting. Age is epoch-count (contests), not wall-clock (idle time); "~3 days" is the ~1.8h/epoch 540-block tempo (revisit if cadence shifts). Emission is unaffected — the seat still earns 100% while held; decay governs only how easily it is *taken*. Single source of truth: `src/lib/consensus/seat-decay.ts`.
+Past grace the bar is `winner_score × (1 + δ·f(age) − H·(1 − f(age)))`: it crosses the winner's real score at `f = H/(δ+H)` (~age 22.5 when δ = H = 3%) and continues **below** it to `winner_score × (1 − H)` by ~3 days. A fully-aged seat is therefore takeable by a challenger scoring up to `H` (3%) **under** the incumbent — the anti-camping teeth. This **deliberately reverses** the earlier "bar never drops below the real score" property: a stale champion is no longer merely stripped of its premium but actively handicapped. **Consequences (intended):** the consensus winner score can drop by up to 3% when a >3-day camper is unseated by a slightly weaker challenger; near the score ceiling δ → 0 but `H` stays a flat 3%, so aged near-max seats become displaceable by ~3%-lower scores (some near-ceiling churn among near-tied leaders is accepted as the cost of a fixed handicap). **Hard forced rotation**: only a *different* hotkey taking the seat resets the clock — a same-hotkey resubmission may raise `winner_score` but never resets `seated_epoch_id`, so a champion cannot camp by re-submitting. Age is epoch-count (contests), not wall-clock (idle time); "~3 days" is the ~1.8h/epoch 540-block tempo (revisit if cadence shifts). Emission is unaffected — the seat still earns 100% while held; decay governs only how easily it is *taken*. Single source of truth: `src/lib/consensus/seat-decay.ts`.
 
 **Winner self-update**: If a `challenge_epoch` evaluates a new pack from the seated winner and that new pack's consensus score passes `better()` against the winner_score, `winner_state` advances to the new pack and a higher defense bar. A *worse* new pack from the seated winner is harmless — the seat references the previous winning pack, not the latest one. The self-update advances the score but **does not** reset the decay clock (`seated_epoch_id` is preserved across same-hotkey updates).
 
@@ -281,7 +282,7 @@ When `SPEC_NUMBER` (formerly `scoring_version`) bumps, the active scoring contra
 
 ### 2. Winner Protection (score-dependent δ from spec 16; flat multiplicative δ before)
 
-**Enforcement**: From spec 16 a challenger must beat the incumbent by the score-dependent margin `δ(s)` — 3% in the normal range, decaying to zero near the score ceiling — to dethrone; before, by a flat multiplicative `δ = 3%`. The bar's protection premium also time-decays with seat age (grace → linear decay → premium gone at ~3 days, floored at the winner's real score). See [Winner Protection](#winner-protection-noise-aware-from-spec-16-flat-multiplicative-δ-before) above.
+**Enforcement**: From spec 16 a challenger must beat the incumbent by the score-dependent margin `δ(s)` — 3% in the normal range, decaying to zero near the score ceiling — to dethrone; before, by a flat multiplicative `δ = 3%`. The bar also time-decays with seat age (grace → premium fades → bar drops *below* the real score to a fixed −3% handicap at ~3 days), so a fully-aged seat is takeable by a challenger scoring up to 3% under the incumbent. See [Winner Protection](#winner-protection-noise-aware-from-spec-16-flat-multiplicative-δ-before) above.
 
 **Prevents**:
 
@@ -289,7 +290,7 @@ When `SPEC_NUMBER` (formerly `scoring_version`) bumps, the active scoring contra
 - Trivial undercutting (gain within noise fails)
 - Free-riding on others' research
 - Winner oscillation from evaluation variance (the margin + Winsorized consensus make this the primary win, since one outlier validator can no longer swing the seat)
-- Seat camping (a stale champion's protection premium decays to zero at ~3 days, so it must be genuinely out-scored to be dethroned; un-campable — a same-hotkey resubmission cannot reset the clock)
+- Seat camping (a stale champion's premium decays to zero and then into a −3% handicap by ~3 days, so a fully-aged seat can be taken by a challenger scoring up to 3% under it; un-campable — a same-hotkey resubmission cannot reset the clock)
 
 ### 3. Pack Ownership Lock (`pack_first_seen`)
 
@@ -718,6 +719,8 @@ No seated winner:  burned to subnet owner UID
 | `EPOCH_LENGTH_BLOCKS` | 150 (≈ 30 min) | Yes (bench-driven; 30 min – several days) |
 | `QUORUM_FRACTION` | 0.40 | Yes |
 | `WINNER_PROTECTION_MARGIN` (δ) | 0.03 (3%) base, decaying to 0 near max score (spec ≥ 16); flat 3% before | Yes |
+| `TERMINAL_HANDICAP` (H) | 0.03 (3%) — bar floor `winner_score × (1 − H)` at seat age ≥ 40 (anti-camping) | No (server-side takeover only) |
+| seat-decay `GRACE_EPOCHS` / `DECAY_END_EPOCHS` | 5 / 40 (~3 days) | No (server-side takeover only) |
 | `INACTIVE_THRESHOLD_EPOCHS` | 3 | Yes |
 | `MIN_VALIDATOR_STAKE` | 10000.0 | Yes |
 | `EMPTY_QUEUE_RECHECK_BLOCKS` | 60 | Yes |
@@ -767,6 +770,7 @@ The full design rationale lives in [`docs/superpowers/specs/2026-05-07-per-epoch
 
 | Version | Date | Summary |
 |---------|------|---------|
+| **v6.3** | **2026-08-02** | **Takeover-bar time-decay (anti-camping).** The takeover bar now decays with the seat's age (epochs since the current hotkey seated, `winner_state.seated_epoch_id`, migration 093). It began (#185) as *score* decay — the bar fell to `winner_score × 0.20`, letting a 20%-scoring challenger seize a stale seat — then was redesigned (#187) to *margin* decay: only the protection premium δ faded, floored at the winner's real score. This entry finalizes it as a **terminal handicap**: past a ~5-epoch grace the bar slides from `winner_score × (1 + δ)` down through the real score and continues to `winner_score × (1 − H)`, `H = 3%`, by `DECAY_END = 40` (~3 days). A fully-aged seat is therefore takeable by a challenger scoring up to 3% *under* the incumbent — deliberately reversing the "never below the real score" property. Hard forced rotation (a same-hotkey resubmission never resets the clock) and 100%-winner-takes-all emission are unchanged; no schema change. Single source of truth: `src/lib/consensus/seat-decay.ts`. |
 | **v6.2** | **2026-06-24** | **Submission fee (recycle_alpha) replaces Coldban.** Web submit is now the sole submission channel; on-chain commitment ingestion is disabled (`CHAIN_SUBMIT_INGEST_ENABLED=false`). Each submission must reference a `recycle_alpha(hotkey, amount ≥ fee, netuid=11)` extrinsic issued by the miner's coldkey. The server verifies the receipt on-chain as the first pre-eval step (`fee_check`). Receipts are consumed only when the submission reaches `pending_eval`; technical failures (download/format/hash/uniqueness/NCD/integrity) do not consume the receipt, allowing the same receipt to back a later submission of a different pack within its 24 h freshness window. The feature is flag-gated (`SUBMISSION_FEE_ENABLED`, default off). Coldban enforcement (`miner_bans` write path) is removed; the table is retained as historical audit. |
 | **v6.1** | **2026-06-12** | **Noise-aware seating (from spec 16).** Consensus center switched to a Winsorized mean (clip single highest + lowest at n ≥ 4). Takeover bar: initially an absolute `D = 0.4` points (2026-06-07), replaced 2026-06-12 by a **score-dependent multiplicative margin δ(s)** — 3% in the normal range, decaying linearly to zero as `winner_score/max_score` goes 0.70 → 1.0 — because Winsorization had already removed the noise D was calibrated against and a fixed absolute bar freezes the seat near the score ceiling; with δ → 0 the takeover bar stays reachable all the way to a perfect score (no freeze band). Pre-spec-16 epochs keep plain mean + flat 3%. |
 | **v6.0** | **2026-05-07** | **Winner-challenger model.** Replaced decentralized off-chain CAS + chain-commitment-pointer consensus with server-coordinated challenge epochs (one challenger per epoch, evaluated against the seated winner). Centralized Phase-1 pre-eval as queue gate. Added `web submit` as a first-class submission channel alongside on-chain commitments. `winner_state` is now server-canonical (replaces per-validator local `WinnerState` JSON). Tightened Winner Protection δ from 10% to 3%. New tables: `challenge_epochs`, `winner_state`, `winner_history`, `validator_activity`.  New `eval_status = 'exhausted'` for `pack_hash` whose first scheduled epoch ended in `aborted_quorum` (no-retry policy — superseded the earlier retry-up-to-3 design). |
@@ -795,4 +799,4 @@ Earlier versions of this document are preserved in `legacy/` (e.g. `legacy/INCEN
 
 ---
 
-**Version**: v6.2
+**Version**: v6.3
